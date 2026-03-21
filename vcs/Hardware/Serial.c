@@ -2,9 +2,13 @@
 #include <Serial.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include "FreeRTOS.H"
+#include "task.h"
+#include "queue.h"
 
 char Serial_RxPacket[100];				//定义接收数据包数组，数据包格式"@MSGpq"
-volatile uint8_t Serial_RxFlag = 0;					//定义接收数据包标志位
+//volatile uint8_t Serial_RxFlag = 0;					//定义接收数据包标志位
+extern QueueHandle_t Serial_Queue;
 
 /**
   * 函    数：串口初始化
@@ -175,18 +179,15 @@ void USART1_IRQHandler(void)
 		/*使用状态机的思路，依次处理数据包的不同部分*/
 		
 		/*当前状态为0，接收数据包包头*/
-		if (RxState == 0)
+		if (RxData == '@')		//如果数据确实是包头，并且上一个数据包已处理完毕
 		{
-			if (RxData == '@' && Serial_RxFlag == 0)		//如果数据确实是包头，并且上一个数据包已处理完毕
-			{
-				RxState = 1;			//置下一个状态
-				pRxPacket = 0;			//数据包的位置归零
-			}
+			RxState = 1;			//置下一个状态
+			pRxPacket = 0;			//数据包的位置归零
 		}
 		/*当前状态为1，接收数据包数据，同时判断是否接收到了第一个包尾*/
 		else if (RxState == 1)
 		{
-			if (RxData == 'p')			//如果收到第一个包尾
+			if (RxData == '!')			//如果收到第一个包尾
 			{
 				RxState = 2;			//置下一个状态
 			}
@@ -194,16 +195,33 @@ void USART1_IRQHandler(void)
 			{
 				Serial_RxPacket[pRxPacket] = RxData;		//将数据存入数据包数组的指定位置
 				pRxPacket ++;			//数据包的位置自增
+				if(pRxPacket > 99)
+				{
+					RxState = 0;			//置第一状态
+					pRxPacket = 0;			//数据包的位置归零
+				}
 			}
 		}
 		/*当前状态为2，接收数据包第二个包尾*/
 		else if (RxState == 2)
 		{
-			if (RxData == 'q')			//如果收到第二个包尾
+			if (RxData == '#')			//如果收到第二个包尾
 			{
 				RxState = 0;			//状态归0
 				Serial_RxPacket[pRxPacket] = '\0';			//将收到的字符数据包添加一个字符串结束标志
-				Serial_RxFlag = 1;		//接收数据包标志位置1，成功接收一个数据包
+				if(Serial_Queue != NULL)
+				{
+					BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+					xQueueSendToBackFromISR(Serial_Queue, Serial_RxPacket, &xHigherPriorityTaskWoken);
+					// 这一步很重要：如果 Task_uart 优先级比当前被中断的任务高，立刻进行任务切换
+					portYIELD_FROM_ISR(xHigherPriorityTaskWoken);					
+				}
+
+				//Serial_RxFlag = 1;		//接收数据包标志位置1，成功接收一个数据包
+			}
+			else
+			{
+				RxState = 0;
 			}
 		}
 		

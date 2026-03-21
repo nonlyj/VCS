@@ -39,6 +39,12 @@ void Servo_Font_SetCompare2(uint16_t Compare){
 	TIM_SetCompare2(SERVO_FONT_TIM_PORT,Compare);
 }
 
+/*
+		CCR					rad
+		500 	 -> 	0бу
+		1500	 -> 	90бу
+		2500	 -> 	180бу	
+*/
 void Servo_Font_SetAngle(float Angle){
 	Servo_Font_SetCompare2(Angle/180*2000+500);
 }

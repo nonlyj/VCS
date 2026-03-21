@@ -1,5 +1,6 @@
 #include "stm32f10x.h"                  // Device header
-#include <LED.h>
+#include "LED.h"
+#include "Delay.h"
 
 void LED_Init(void){
 	RCC_APB2PeriphClockCmd(LED_GPIO_CLK,ENABLE);
@@ -15,6 +16,10 @@ void LED_ON(void){
 	GPIO_ResetBits(LED_GPIO_Port,LED_PIN_PIN);
 }
 
+void LED_OFF(void){
+	GPIO_SetBits(LED_GPIO_Port,LED_PIN_PIN);
+}
+
 void LED_Turn(void){
 	if(GPIO_ReadOutputDataBit(LED_GPIO_Port,LED_PIN_PIN)==0)
 		GPIO_SetBits(LED_GPIO_Port,LED_PIN_PIN);
@@ -22,7 +27,14 @@ void LED_Turn(void){
 		GPIO_ResetBits(LED_GPIO_Port,LED_PIN_PIN);
 }
 
-void LED_OFF(void){
-	GPIO_SetBits(LED_GPIO_Port,LED_PIN_PIN);
+void LED_Flash(void)
+{
+	int i = 0;
+	for(i = 0; i < 5; i++)
+	{
+		LED_ON();
+		Delay_ms(100);
+		LED_OFF();
+		Delay_ms(100);		
+	}
 }
-
