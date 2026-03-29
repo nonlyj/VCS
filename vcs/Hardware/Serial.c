@@ -2,13 +2,20 @@
 #include <Serial.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <string.h>
 #include "FreeRTOS.H"
 #include "task.h"
 #include "queue.h"
 
-char Serial_RxPacket[100];				//定义接收数据包数组，数据包格式"@MSGpq"
-//volatile uint8_t Serial_RxFlag = 0;					//定义接收数据包标志位
+char Serial_RxPacket[RX_BUF_SIZE];				//定义接收数据包数组，数据包格式"@MSG!#"
+uint8_t Rx_RingBuffer[RX_BUF_SIZE];       // DMA 硬件自动循环搬运的环形缓冲区
 extern QueueHandle_t Serial_Queue;
+
+// 环形缓冲区的读指针（写指针由 DMA 硬件的 Counter 实时反映）
+static uint16_t read_ptr = 0;             
+
+extern QueueHandle_t Serial_Queue;
+
 
 /**
   * 函    数：串口初始化
@@ -20,6 +27,7 @@ void Serial_Init(void)
 	/*开启时钟*/
 	RCC_APB2PeriphClockCmd(SERIAL_UART_CLK, ENABLE);	//开启USART1的时钟
 	RCC_APB2PeriphClockCmd(SERIAL_GPIO_CLK, ENABLE);	//开启GPIOA的时钟
+	RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1, ENABLE);	//开启DMA1的时钟
 	
 	/*GPIO初始化*/
 	GPIO_InitTypeDef GPIO_InitStructure;
@@ -43,8 +51,27 @@ void Serial_Init(void)
 	USART_InitStructure.USART_WordLength = SERIAL_WORDLENGTH;		//字长，选择8位
 	USART_Init(USART1, &USART_InitStructure);				//将结构体变量交给USART_Init，配置USART1
 	
+	/* DMA 初始化 (USART1_RX 对应 DMA1_Channel5) */
+	DMA_DeInit(DMA1_Channel5);
+	DMA_InitTypeDef DMA_InitStructure;
+	DMA_InitStructure.DMA_PeripheralBaseAddr = (uint32_t)&USART1->DR; // 外设地址：串口数据寄存器
+	DMA_InitStructure.DMA_MemoryBaseAddr = (uint32_t)Rx_RingBuffer;    // 内存地址：自定义数组
+	DMA_InitStructure.DMA_DIR = DMA_DIR_PeripheralSRC;                // 方向：外设到内存
+	DMA_InitStructure.DMA_BufferSize = RX_BUF_SIZE;                   // 缓冲区大小
+	DMA_InitStructure.DMA_PeripheralInc = DMA_PeripheralInc_Disable;  // 外设地址不自增
+	DMA_InitStructure.DMA_MemoryInc = DMA_MemoryInc_Enable;           // 内存地址自增
+	DMA_InitStructure.DMA_PeripheralDataSize = DMA_PeripheralDataSize_Byte; // 字节传输
+	DMA_InitStructure.DMA_MemoryDataSize = DMA_MemoryDataSize_Byte;
+	DMA_InitStructure.DMA_Mode = DMA_Mode_Circular;                     // 循环模式，到达数组末尾自动回到 0 重新覆盖
+	DMA_InitStructure.DMA_Priority = DMA_Priority_Medium;
+	DMA_InitStructure.DMA_M2M = DMA_M2M_Disable;
+	DMA_Init(DMA1_Channel5, &DMA_InitStructure);
+
+	DMA_Cmd(DMA1_Channel5, ENABLE); // 使能 DMA 通道
+	USART_DMACmd(USART1, USART_DMAReq_Rx, ENABLE); // 开启串口的 DMA 接收请求
+	
 	/*中断输出配置*/
-	USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);			//开启串口接收数据的中断
+	USART_ITConfig(USART1, USART_IT_IDLE, ENABLE);	// 关闭RXNE，开启IDLE(空闲)中断
 	
 	/*NVIC中断分组*/
 	NVIC_PriorityGroupConfig(NVIC_PriorityGroup_4);			//配置NVIC为分组4
@@ -164,67 +191,127 @@ void Serial_Printf(char *format, ...)
   * 函    数：USART1中断函数
   * 参    数：无
   * 返 回 值：无
-  * 注意事项：此函数为中断函数，无需调用，中断触发后自动执行
-  *           函数名为预留的指定名称，可以从启动文件复制
-  *           请确保函数名正确，不能有任何差异，否则中断函数将不能进入
   */
 void USART1_IRQHandler(void)
 {
-	static uint8_t RxState = 0;		//定义表示当前状态机状态的静态变量
-	static uint8_t pRxPacket = 0;	//定义表示当前接收数据位置的静态变量
-	if (USART_GetITStatus(USART1, USART_IT_RXNE) == SET)	//判断是否是USART1的接收事件触发的中断
-	{
-		uint8_t RxData = USART_ReceiveData(USART1);			//读取数据寄存器，存放在接收的数据变量
-		
-		/*使用状态机的思路，依次处理数据包的不同部分*/
-		
-		/*当前状态为0，接收数据包包头*/
-		if (RxData == '@')		//如果数据确实是包头，并且上一个数据包已处理完毕
-		{
-			RxState = 1;			//置下一个状态
-			pRxPacket = 0;			//数据包的位置归零
-		}
-		/*当前状态为1，接收数据包数据，同时判断是否接收到了第一个包尾*/
-		else if (RxState == 1)
-		{
-			if (RxData == '!')			//如果收到第一个包尾
-			{
-				RxState = 2;			//置下一个状态
-			}
-			else						//接收到了正常的数据
-			{
-				Serial_RxPacket[pRxPacket] = RxData;		//将数据存入数据包数组的指定位置
-				pRxPacket ++;			//数据包的位置自增
-				if(pRxPacket > 99)
-				{
-					RxState = 0;			//置第一状态
-					pRxPacket = 0;			//数据包的位置归零
-				}
-			}
-		}
-		/*当前状态为2，接收数据包第二个包尾*/
-		else if (RxState == 2)
-		{
-			if (RxData == '#')			//如果收到第二个包尾
-			{
-				RxState = 0;			//状态归0
-				Serial_RxPacket[pRxPacket] = '\0';			//将收到的字符数据包添加一个字符串结束标志
-				if(Serial_Queue != NULL)
-				{
-					BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-					xQueueSendToBackFromISR(Serial_Queue, Serial_RxPacket, &xHigherPriorityTaskWoken);
-					// 这一步很重要：如果 Task_uart 优先级比当前被中断的任务高，立刻进行任务切换
-					portYIELD_FROM_ISR(xHigherPriorityTaskWoken);					
-				}
+    // 检查是否是空闲中断 (代表一帧数据接收完毕)
+    if (USART_GetITStatus(USART1, USART_IT_IDLE) != RESET)
+    {
+        // 清除 IDLE 标志位的固定玄学操作：先读 SR，再读 DR
+        volatile uint16_t clear = USART1->SR;	// 状态寄存器
+        clear = USART1->DR;	// 数据寄存器
+        (void)clear; // 防止编译器报未使用的警告
 
-				//Serial_RxFlag = 1;		//接收数据包标志位置1，成功接收一个数据包
-			}
-			else
-			{
-				RxState = 0;
-			}
-		}
-		
-		USART_ClearITPendingBit(USART1, USART_IT_RXNE);		//清除标志位
-	}
+        // 获取 DMA 硬件当前的“写指针”位置
+        uint16_t write_ptr = RX_BUF_SIZE - DMA_GetCurrDataCounter(DMA1_Channel5);
+			
+				// 计算新接收到了多少数据
+				uint16_t rx_len = 0;
+				if(write_ptr >= read_ptr)
+				{
+					rx_len = write_ptr - read_ptr;
+				}
+				else
+				{
+					rx_len = RX_BUF_SIZE - read_ptr + write_ptr;
+				}
+			
+        // 将环形数据提取到线性缓冲区进行解析
+        if (rx_len > 0)
+        {
+						static uint8_t Linear_Buffer[RX_BUF_SIZE * 2];
+						uint16_t i = 0;
+						// 追赶写指针，将数据全部拷贝出来
+            while (read_ptr != write_ptr) {
+                Linear_Buffer[i++] = Rx_RingBuffer[read_ptr];
+                read_ptr = (read_ptr + 1) % RX_BUF_SIZE; // 读指针自增并循环回绕
+            }
+            Linear_Buffer[i] = '\0'; // 加上字符串结束符
+						
+						// 解析指令逻辑：寻找包头包尾
+            char *start = strchr((char*)Linear_Buffer, '@');
+            char *end = strstr((char*)Linear_Buffer, "!#");
+            
+            // 如果成功找到了完整的包格式：例如 "@Servo_fl!#"
+            if (start != NULL && end != NULL && end > start)
+            {
+                uint16_t payload_len = end - start - 1; // 计算有效载荷长度，这里是 8 (Servo_fl)
+                if (payload_len < RX_BUF_SIZE)
+                {
+                    // 把有效命令拷入发送包
+                    strncpy(Serial_RxPacket, start + 1, payload_len);
+                    Serial_RxPacket[payload_len] = '\0';
+                    
+                    // 将干净的指令发送给 FreeRTOS 任务队列
+                    if (Serial_Queue != NULL)
+                    {
+                        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+                        xQueueSendToBackFromISR(Serial_Queue, Serial_RxPacket, &xHigherPriorityTaskWoken);
+                        portYIELD_FROM_ISR(xHigherPriorityTaskWoken); // 上下文切换
+                    }
+                }
+            }
+        }
+    }
 }
+
+//void USART1_IRQHandler(void)
+//{
+//	static uint8_t RxState = 0;		//定义表示当前状态机状态的静态变量
+//	static uint8_t pRxPacket = 0;	//定义表示当前接收数据位置的静态变量
+//	if (USART_GetITStatus(USART1, USART_IT_RXNE) == SET)	//判断是否是USART1的接收事件触发的中断
+//	{
+//		uint8_t RxData = USART_ReceiveData(USART1);			//读取数据寄存器，存放在接收的数据变量
+//		
+//		/*使用状态机的思路，依次处理数据包的不同部分*/
+//		
+//		/*当前状态为0，接收数据包包头*/
+//		if (RxData == '@')		//如果数据确实是包头，并且上一个数据包已处理完毕
+//		{
+//			RxState = 1;			//置下一个状态
+//			pRxPacket = 0;			//数据包的位置归零
+//		}
+//		/*当前状态为1，接收数据包数据，同时判断是否接收到了第一个包尾*/
+//		else if (RxState == 1)
+//		{
+//			if (RxData == '!')			//如果收到第一个包尾
+//			{
+//				RxState = 2;			//置下一个状态
+//			}
+//			else						//接收到了正常的数据
+//			{
+//				Serial_RxPacket[pRxPacket] = RxData;		//将数据存入数据包数组的指定位置
+//				pRxPacket ++;			//数据包的位置自增
+//				if(pRxPacket > 99)
+//				{
+//					RxState = 0;			//置第一状态
+//					pRxPacket = 0;			//数据包的位置归零
+//				}
+//			}
+//		}
+//		/*当前状态为2，接收数据包第二个包尾*/
+//		else if (RxState == 2)
+//		{
+//			if (RxData == '#')			//如果收到第二个包尾
+//			{
+//				RxState = 0;			//状态归0
+//				Serial_RxPacket[pRxPacket] = '\0';			//将收到的字符数据包添加一个字符串结束标志
+//				if(Serial_Queue != NULL)
+//				{
+//					BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+//					xQueueSendToBackFromISR(Serial_Queue, Serial_RxPacket, &xHigherPriorityTaskWoken);
+//					// 这一步很重要：如果 Task_uart 优先级比当前被中断的任务高，立刻进行任务切换
+//					portYIELD_FROM_ISR(xHigherPriorityTaskWoken);					
+//				}
+
+//				//Serial_RxFlag = 1;		//接收数据包标志位置1，成功接收一个数据包
+//			}
+//			else
+//			{
+//				RxState = 0;
+//			}
+//		}
+//		
+//		USART_ClearITPendingBit(USART1, USART_IT_RXNE);		//清除标志位
+//	}
+//}

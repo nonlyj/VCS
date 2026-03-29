@@ -15,9 +15,9 @@
 #define SERIAL_WORDLENGTH		USART_WordLength_8b
 
 
+// 定义接收缓冲区大小
+#define RX_BUF_SIZE         256
 
-extern char Serial_RxPacket[];
-extern volatile uint8_t Serial_RxFlag;
 
 void Serial_Init(void);
 void Serial_SendByte(uint8_t Byte);

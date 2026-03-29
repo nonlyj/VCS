@@ -29,7 +29,7 @@ void Servo_Back_Init(void){
 	TIM_OCInitStruct.TIM_OCMode=TIM_OCMode_PWM1;
 	TIM_OCInitStruct.TIM_OCPolarity=TIM_OCPolarity_High;
 	TIM_OCInitStruct.TIM_OutputState=TIM_OutputState_Enable;
-	TIM_OCInitStruct.TIM_Pulse=0;	//CCR
+	TIM_OCInitStruct.TIM_Pulse=1500;	//CCR
 	TIM_OC2Init(SERVO_BACK_TIM_PORT,&TIM_OCInitStruct);
 	
 	TIM_Cmd(SERVO_BACK_TIM_PORT,ENABLE);
