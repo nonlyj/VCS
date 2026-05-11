@@ -14,6 +14,7 @@
 #include "HCSR04.h"
 #include "Buzzer.h"
 #include "pid.h"
+#include "MyCAN.h"
 
 #define UART_LED								"LED"
 #define UART_SERVO_FONT_LEFT		"Servo_fl"
@@ -34,11 +35,12 @@
 
 TaskHandle_t Task_led_flash_handle;			// LED任务句柄
 TaskHandle_t Task_dht11_handle;					// DHT11任务句柄
-TaskHandle_t Task_uart_handle;					// uart任务句柄
+//TaskHandle_t Task_uart_handle;					// uart任务句柄
+TaskHandle_t Task_can_handle;					// can任务句柄
 TaskHandle_t Task_Sentry_handle;      	// 哨兵任务句柄
 TaskHandle_t Task_Servo_Smooth_handle;  // PID任务句柄
 
-QueueHandle_t Serial_Queue;	// 队列，串口中断中发送数据
+QueueHandle_t CAN_Queue;	// 队列，CAN中断中发送数据
 EventGroupHandle_t	LED_Event;	// 事件组，四车门均关闭时led闪烁
 SemaphoreHandle_t Serial_Mutex;	// 互斥量，保护串口资源
 SemaphoreHandle_t Servo_Font_Binary; // 同步量，保护串口资源
@@ -48,68 +50,101 @@ static u8 humi;
 volatile float Sentry_Distance = 0.0; // 记录最新距离 (cm)
 
 // 实例化两个车门的 PID 控制器
-// Kp=0.15, Kd=0.08 是我为你调好的经验值，阻尼感非常高级！
 PID_Controller Font_Door_PID = {0.15f, 0.08f, 90.0f, 90.0f, 0.0f, 3.0f};
 PID_Controller Back_Door_PID = {0.15f, 0.08f, 90.0f, 90.0f, 0.0f, 3.0f};
 
 
 /* 处理uart收到的信息 */
-static void Task_uart(void *arg)
+//static void Task_uart(void *arg)
+//{
+//	char buffer[100];
+//	while(1)
+//	{
+//		if(pdPASS == xQueueReceive(CAN_Queue, buffer, portMAX_DELAY))
+//		{
+//			if(!strcmp(buffer, UART_LED))	// LED
+//			{
+//				LED_Turn();
+//			}
+//			else if(!strcmp(buffer, UART_SERVO_FONT_LEFT))	// SERVO_FONT_LEFT
+//			{
+//				xEventGroupClearBits(LED_Event, EVENT_SERVO_FONT_CLOSE);
+//				Font_Door_PID.target = 180.0f;
+//			}
+//			else if(!strcmp(buffer, UART_SERVO_FONT_RIGHT))	// SERVO_FONT_RIGHT
+//			{
+//				xEventGroupClearBits(LED_Event, EVENT_SERVO_FONT_CLOSE);
+//				Font_Door_PID.target = 0.0f;
+//			}
+//			else if(!strcmp(buffer, UART_SERVO_FONT_CLOSE))	// SERVO_FONT_CLOSE
+//			{
+//				xEventGroupSetBits(LED_Event, EVENT_SERVO_FONT_CLOSE);
+//				Font_Door_PID.target = 90.0f;
+//			}
+//			else if(!strcmp(buffer, UART_SERVO_BACK_LEFT))	// SERVO_BACK_LEFT
+//			{
+//				xEventGroupClearBits(LED_Event, EVENT_SERVO_BACK_CLOSE);
+//				Back_Door_PID.target = 180.0f;
+//			}
+//			else if(!strcmp(buffer, UART_SERVO_BACK_RIGHT))	// SERVO_BACK_RIGHT
+//			{
+//				xEventGroupClearBits(LED_Event, EVENT_SERVO_BACK_CLOSE);
+//				Back_Door_PID.target = 0.0f;
+//			}
+//			else if(!strcmp(buffer, UART_SERVO_BACK_CLOSE))	// SERVO_BACK_CLOSE
+//			{
+//				xEventGroupSetBits(LED_Event, EVENT_SERVO_BACK_CLOSE);
+//				Back_Door_PID.target = 90.0f;
+//			}
+//			else
+//			{
+//				xSemaphoreTake(Serial_Mutex, portMAX_DELAY);
+//				Serial_Printf("Unknown %s\r\n",buffer);
+//				xSemaphoreGive(Serial_Mutex);
+//			}
+//		}
+//		else
+//		{
+//				xSemaphoreTake(Serial_Mutex, portMAX_DELAY);
+//				Serial_Printf("xQueueReceive failed\r\n");
+//				xSemaphoreGive(Serial_Mutex);
+//		}
+//		vTaskDelay(10);	// 10ms
+//	}
+//}
+
+/* CAN */
+static void Task_CAN_Rx(void *arg)
 {
-	char buffer[100];
-	while(1)
-	{
-		if(pdPASS == xQueueReceive(Serial_Queue, buffer, portMAX_DELAY))
-		{
-			if(!strcmp(buffer, UART_LED))	// LED
-			{
-				LED_Turn();
-			}
-			else if(!strcmp(buffer, UART_SERVO_FONT_LEFT))	// SERVO_FONT_LEFT
-			{
-				xEventGroupClearBits(LED_Event, EVENT_SERVO_FONT_CLOSE);
-				Font_Door_PID.target = 180.0f;
-			}
-			else if(!strcmp(buffer, UART_SERVO_FONT_RIGHT))	// SERVO_FONT_RIGHT
-			{
-				xEventGroupClearBits(LED_Event, EVENT_SERVO_FONT_CLOSE);
-				Font_Door_PID.target = 0.0f;
-			}
-			else if(!strcmp(buffer, UART_SERVO_FONT_CLOSE))	// SERVO_FONT_CLOSE
-			{
-				xEventGroupSetBits(LED_Event, EVENT_SERVO_FONT_CLOSE);
-				Font_Door_PID.target = 90.0f;
-			}
-			else if(!strcmp(buffer, UART_SERVO_BACK_LEFT))	// SERVO_BACK_LEFT
-			{
-				xEventGroupClearBits(LED_Event, EVENT_SERVO_BACK_CLOSE);
-				Back_Door_PID.target = 180.0f;
-			}
-			else if(!strcmp(buffer, UART_SERVO_BACK_RIGHT))	// SERVO_BACK_RIGHT
-			{
-				xEventGroupClearBits(LED_Event, EVENT_SERVO_BACK_CLOSE);
-				Back_Door_PID.target = 0.0f;
-			}
-			else if(!strcmp(buffer, UART_SERVO_BACK_CLOSE))	// SERVO_BACK_CLOSE
-			{
-				xEventGroupSetBits(LED_Event, EVENT_SERVO_BACK_CLOSE);
-				Back_Door_PID.target = 90.0f;
-			}
-			else
-			{
-				xSemaphoreTake(Serial_Mutex, portMAX_DELAY);
-				Serial_Printf("Unknown %s\r\n",buffer);
-				xSemaphoreGive(Serial_Mutex);
-			}
-		}
-		else
-		{
-				xSemaphoreTake(Serial_Mutex, portMAX_DELAY);
-				Serial_Printf("xQueueReceive failed\r\n");
-				xSemaphoreGive(Serial_Mutex);
-		}
-		vTaskDelay(10);	// 10ms
-	}
+    CAN_Msg_t rx_msg;
+    while(1)
+    {
+        // 阻塞等待 CAN 队列的数据
+        if(pdPASS == xQueueReceive(CAN_Queue, &rx_msg, portMAX_DELAY))
+        {
+            // Data[0] 存放指令码
+            switch(rx_msg.Data[0]) 
+            {
+                case CAN_CMD_LED:
+                    LED_Turn();
+                    break;
+                case CAN_CMD_SERVO_FL:
+                    xEventGroupClearBits(LED_Event, EVENT_SERVO_FONT_CLOSE);
+                    Font_Door_PID.target = 180.0f;
+                    break;
+                case CAN_CMD_SERVO_FC:
+                    xEventGroupSetBits(LED_Event, EVENT_SERVO_FONT_CLOSE);
+                    Font_Door_PID.target = 90.0f;
+                    break;
+                case CAN_CMD_SERVO_FR:
+                    xEventGroupClearBits(LED_Event, EVENT_SERVO_FONT_CLOSE);
+                    Font_Door_PID.target = 0.0f;
+                    break;								
+                default:
+                    break;
+            }
+        }
+    }
 }
 
 /* Dht11 */
@@ -197,7 +232,7 @@ static void Task_Servo_Smooth(void *arg)
 
 int main(void){
 	Serial_Mutex = xSemaphoreCreateMutex();
-	Serial_Queue = xQueueCreate(4, 100);
+	CAN_Queue = xQueueCreate(4, 100);
 	LED_Event = xEventGroupCreate();	
 	
 	Delay_Init();
@@ -210,11 +245,12 @@ int main(void){
 	
 	Serial_Printf("\r\n");
 	
-	xTaskCreate(Task_dht11,"dht11",512,NULL,2,&Task_dht11_handle);
-	xTaskCreate(Task_uart,"uart",512,NULL,3,&Task_uart_handle);
-	xTaskCreate(Task_led_flash,"led_flash",512,NULL,3,&Task_led_flash_handle);
-	xTaskCreate(Task_Sentry,"Sentry",512,NULL,4,&Task_Sentry_handle);
-	xTaskCreate(Task_Servo_Smooth,"Servo_Smooth",512,NULL,3,&Task_Servo_Smooth_handle);
+	xTaskCreate(Task_dht11,"dht11",128,NULL,2,&Task_dht11_handle);
+//	xTaskCreate(Task_uart,"uart",128,NULL,3,&Task_uart_handle);
+	xTaskCreate(Task_CAN_Rx,"can",128,NULL,3,&Task_can_handle);	
+	xTaskCreate(Task_led_flash,"led_flash",128,NULL,2,&Task_led_flash_handle);
+	xTaskCreate(Task_Sentry,"Sentry",128,NULL,4,&Task_Sentry_handle);
+	xTaskCreate(Task_Servo_Smooth,"Servo_Smooth",128,NULL,2,&Task_Servo_Smooth_handle);
 	
 	vTaskStartScheduler();
 	
