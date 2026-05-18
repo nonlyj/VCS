@@ -9,12 +9,12 @@
 
 char Serial_RxPacket[RX_BUF_SIZE];				//定义接收数据包数组，数据包格式"@MSG!#"
 uint8_t Rx_RingBuffer[RX_BUF_SIZE];       // DMA 硬件自动循环搬运的环形缓冲区
-extern QueueHandle_t Serial_Queue;
+//extern QueueHandle_t Serial_Queue;
 
 // 环形缓冲区的读指针（写指针由 DMA 硬件的 Counter 实时反映）
 static uint16_t read_ptr = 0;             
 
-extern QueueHandle_t Serial_Queue;
+//extern QueueHandle_t Serial_Queue;
 
 
 /**
@@ -74,7 +74,7 @@ void Serial_Init(void)
 	USART_ITConfig(USART1, USART_IT_IDLE, ENABLE);	// 关闭RXNE，开启IDLE(空闲)中断
 	
 	/*NVIC中断分组*/
-	NVIC_PriorityGroupConfig(NVIC_PriorityGroup_4);			//配置NVIC为分组4
+	NVIC_PriorityGroupConfig(NVIC_PriorityGroup_4);			//配置NVIC为分组4，将所有4位用于指定抢占优先级
 	
 	/*NVIC配置*/
 	NVIC_InitTypeDef NVIC_InitStructure;					//定义结构体变量
@@ -243,12 +243,12 @@ void USART1_IRQHandler(void)
                     Serial_RxPacket[payload_len] = '\0';
                     
                     // 将干净的指令发送给 FreeRTOS 任务队列
-                    if (Serial_Queue != NULL)
-                    {
-                        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-                        xQueueSendToBackFromISR(Serial_Queue, Serial_RxPacket, &xHigherPriorityTaskWoken);
-                        portYIELD_FROM_ISR(xHigherPriorityTaskWoken); // 上下文切换
-                    }
+//                    if (Serial_Queue != NULL)
+//                    {
+//                        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+//                        xQueueSendToBackFromISR(Serial_Queue, Serial_RxPacket, &xHigherPriorityTaskWoken);
+//                        portYIELD_FROM_ISR(xHigherPriorityTaskWoken); // 上下文切换
+//                    }
                 }
             }
         }

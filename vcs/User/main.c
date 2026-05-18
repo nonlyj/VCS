@@ -153,9 +153,9 @@ static void Task_dht11(void *arg)
 	vTaskDelay(1000);
 	while(DHT11_Init())
 	{
-		xSemaphoreTake(Serial_Mutex, portMAX_DELAY);
-		Serial_Printf("DHT11 Error \r\n");
-		xSemaphoreGive(Serial_Mutex);
+//		xSemaphoreTake(Serial_Mutex, portMAX_DELAY);
+//		Serial_Printf("DHT11 Error \r\n");
+//		xSemaphoreGive(Serial_Mutex);
 		
 		vTaskDelay(1000);
 	}		
@@ -164,7 +164,9 @@ static void Task_dht11(void *arg)
 		DHT11_Read_Data(&temp,&humi);	// 获取温湿度的值
 		
 		xSemaphoreTake(Serial_Mutex, portMAX_DELAY);
-		Serial_Printf("temp %d   humi %d%%RH\n",temp,humi);
+//		Serial_Printf("temp %d   humi %d%%RH\n",temp,humi);
+		uint8_t dht_data[3] = {0xEE, temp, humi};
+		MyCAN_Transmit(CAN_TX_ID, dht_data, 3);
 		xSemaphoreGive(Serial_Mutex);
 		
 		vTaskDelay(1000);
@@ -193,9 +195,16 @@ static void Task_Sentry(void *arg)
 		// 如果没有收到危险通知，任务休眠不占 CPU；收到通知立刻执行！
 		if(ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100)) > 0)
 		{
-			// 有人进入了 3cm 以内的防撞警戒线
+			uint8_t report_data[4] = {0};
+			report_data[0] = 0xFF; // 警报标志位
+
+			// 将浮点数距离乘以10转为整数发送
+			uint16_t dist_int = (uint16_t)(Sentry_Distance * 10);
+			report_data[1] = (dist_int >> 8) & 0xFF; // 高8位
+			report_data[2] = dist_int & 0xFF;        // 低8位
+
 			xSemaphoreTake(Serial_Mutex, portMAX_DELAY);
-			Serial_Printf("WARNING! INTRUDER DETECTED! Dist: %.1f cm\r\n", Sentry_Distance);
+			MyCAN_Transmit(CAN_TX_ID, report_data, 3); // 发送 3 个字节
 			xSemaphoreGive(Serial_Mutex);
 
 			/* 蜂鸣器鸣叫，强制关门 */
@@ -203,7 +212,6 @@ static void Task_Sentry(void *arg)
 			Font_Door_PID.target = 90.0f; 
 			Back_Door_PID.target = 90.0f;
 
-			// 报警后强制延时 500ms，防止串口一直被疯狂刷屏
 			vTaskDelay(500); 	// pdMS_TO_TICKS(500) 500ms
 		}
 	}
@@ -215,16 +223,16 @@ static void Task_Servo_Smooth(void *arg)
 	while(1)
 	{
 		
-		// 1. 分别计算前后门当前的平滑过渡角度
+		// 分别计算前后门当前的平滑过渡角度
 		float font_next_angle = PID_Compute_Step(&Font_Door_PID);
 		float back_next_angle = PID_Compute_Step(&Back_Door_PID);
 
-		// 2. 将平滑变化的角度真正输出给底层 PWM
-		// （前提是你的 Servo_Font_SetAngle 里面是通过修改 TIM_SetCompare 来更新占空比的）
+		// 将平滑变化的角度真正输出给底层 PWM
+		// （前提是 Servo_Font_SetAngle 里面是通过修改 TIM_SetCompare 来更新占空比的）
 		Servo_Font_SetAngle(font_next_angle);
 		Servo_Back_SetAngle(back_next_angle);
 
-		// 3. 阻塞延时 20ms (即 50Hz 控制周期，正好与舵机 PWM 周期完美契合)
+		// 阻塞延时 20ms (即 50Hz 控制周期，正好与舵机 PWM 周期完美契合)
 		vTaskDelay(pdMS_TO_TICKS(20)); 
 	}
 }
@@ -232,18 +240,19 @@ static void Task_Servo_Smooth(void *arg)
 
 int main(void){
 	Serial_Mutex = xSemaphoreCreateMutex();
-	CAN_Queue = xQueueCreate(4, 100);
+	CAN_Queue = xQueueCreate(10, sizeof(CAN_Msg_t));
 	LED_Event = xEventGroupCreate();	
 	
 	Delay_Init();
 	LED_Init();
-	Serial_Init();
+//	Serial_Init();
+	MyCAN_Init();
 	Servo_Font_Init();
 	Servo_Back_Init();
 	HCSR04_Init();
 	Buzzer_Init();
 	
-	Serial_Printf("\r\n");
+//	Serial_Printf("\r\n");
 	
 	xTaskCreate(Task_dht11,"dht11",128,NULL,2,&Task_dht11_handle);
 //	xTaskCreate(Task_uart,"uart",128,NULL,3,&Task_uart_handle);
@@ -265,17 +274,17 @@ void EXTI9_5_IRQHandler(void)
         // 判断当前是上升沿还是下降沿
         if (GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_5) == 1) 
         {
-            // 上升沿：Echo 刚变高，开始微秒计时
+            // 上升沿 Echo 刚变高，开始微秒计时
             TIM_SetCounter(TIM1, 0); // TIM1 清零
             TIM_Cmd(TIM1, ENABLE);   // TIM1 开始计时
         }
         else 
         {
-            // 下降沿：Echo 变低，计时结束
+            // 下降沿 Echo 变低，计时结束
             TIM_Cmd(TIM1, DISABLE);  // TIM1 停止计时
             uint16_t time_us = TIM_GetCounter(TIM1); // 获取持续时间(us)
             
-            // 计算距离：距离 = 时间(us) * 0.017
+            // 距离 = 时间(us) * 0.017
             Sentry_Distance = time_us * 0.017f;
             
             // 如果距离小于 3cm，视为危险入侵！立刻唤醒最高优先级的任务！
