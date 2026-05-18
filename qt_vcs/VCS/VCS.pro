@@ -1,5 +1,6 @@
 QT       += core gui
-QT       += core gui serialport
+#QT       += core gui serialport
+QT       += core gui serialport serialbus
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
@@ -17,6 +18,7 @@ DEFINES += QT_DEPRECATED_WARNINGS
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
 
 SOURCES += \
+    canbusmanager.cpp \
     main.cpp \
     mainwindow.cpp \
     mqttmanager.cpp \
@@ -29,6 +31,7 @@ HEADERS += \
     MQTTProperties.h \
     MQTTReasonCodes.h \
     MQTTSubscribeOpts.h \
+    canbusmanager.h \
     mainwindow.h \
     mqttmanager.h \
     serialportmanager.h

@@ -2,10 +2,11 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
-#include "serialportmanager.h" // 引入串口管理类
+//#include "serialportmanager.h" // 引入串口管理类
 #include "mqttmanager.h"
-#include <QProcess>
-#include <QTimer>
+#include "canbusmanager.h"
+//#include <QProcess>
+//#include <QTimer>
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -27,14 +28,15 @@ private slots:
     void on_bt_led_clicked();
     void handleTemperatureUpdate(const QString &tempData);
     void handleSentryWarningUpdate(const QString &warnData);
-    void stopCamera();
+//    void stopCamera();
 
 private:
     Ui::MainWindow *ui;
-    SerialPortManager *serialManager; // 串口管理对象指针
+//    SerialPortManager *serialManager; // 串口管理对象指针
     MqttManager *mqttManager;
-    QProcess *video_process;
-    QTimer *videoTimer;
+    CanBusManager *canManager;
+//    QProcess *video_process;
+//    QTimer *videoTimer;
 
     // 记录四个车门和 LED 的状态 (false = 关/灭, true = 开/亮)
     bool fl_state;
